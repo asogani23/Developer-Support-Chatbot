@@ -18,8 +18,7 @@ def log_query(query, response):
     data["Query"].append(query)
     data["Response"].append(response)
 
-
-
+# Simulated Chatbot API call
 def chatbot_api_simulation(query):
     url = "http://127.0.0.1:5000/query"
     response = requests.post(url, json={"query": query})
@@ -28,15 +27,14 @@ def chatbot_api_simulation(query):
     else:
         return "Error connecting to chatbot API."
 
-
 # Streamlit UI
 st.title("Developer Support Chatbot Dashboard")
 
 # Input Section
 st.header("Interact with Chatbot")
-query = st.text_input("Enter your query:")
+query = st.text_input("Enter your query:", key="query_input_box")
 if st.button("Submit"):
-    response = chatbot_api_simulation(query)  # Replace with actual chatbot API call
+    response = chatbot_api_simulation(query)
     log_query(query, response)
     st.success(f"Chatbot Response: {response}")
 

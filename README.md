@@ -34,3 +34,16 @@ python app.py          # => http://127.0.0.1:5000/query
 
 # 3. (Optional) Open the Streamlit dashboard in a second terminal
 streamlit run dashboard.py        # => http://localhost:8501
+
+
+## 📸 Product Tour
+
+| | |
+|---|---|
+| **1&nbsp;·&nbsp;Interactive Dashboard** <br>Live query console, rolling log, and usage analytics | **2&nbsp;·&nbsp;VS Code Extension** <br>Inline answers & code snippets without leaving your editor |
+| <img src="images/dashboard.png" alt="Streamlit dashboard showing query log and bar chart" width="400"/> | <img src="images/vscode_extension.png" alt="VS Code panel with chatbot response" width="400"/> |
+
+| | |
+|---|---|
+| **3&nbsp;·&nbsp;Single-Endpoint API** <br>Curl demo hitting `/query` | 
+| <img src="images/postman_api.png" alt="Postman call returning JSON answer" width="400"/> |

@@ -35,7 +35,6 @@ python app.py          # => http://127.0.0.1:5000/query
 # 3. (Optional) Open the Streamlit dashboard in a second terminal
 streamlit run dashboard.py        # => http://localhost:8501
 
-
 ## 📸 Product Tour
 
 | | |

@@ -40,10 +40,10 @@ streamlit run dashboard.py        # => http://localhost:8501
 
 | | |
 |---|---|
-| **1&nbsp;·&nbsp;Interactive Dashboard** <br>Live query console, rolling log, and usage analytics | **2&nbsp;·&nbsp;Query** <br>Query Board |
+| **1&nbsp;·&nbsp;Interactive Dashboard** <br>Live query console, rolling log, and usage analytics | **2&nbsp;·&nbsp;Query** <br>Query Log |
 | <img src="images/dashboard.png" alt="Streamlit dashboard showing query log and bar chart" width="400"/> | <img src="images/query.png" alt="VS Code panel with chatbot response" width="400"/> |
 
 | | |
 |---|---|
-| **3&nbsp;·&nbsp;Single-Endpoint API** <br>Curl demo hitting `/query` | 
-| <img src="images/postman_api.png" alt="Postman call returning JSON answer" width="400"/> |
+| **3&nbsp;·&nbsp;Output** <br>Output of Query | 
+| <img src="images/Screenshot 2025-06-26 023604.png" alt="Postman call returning JSON answer" width="400"/> |

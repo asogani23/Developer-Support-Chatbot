@@ -46,4 +46,4 @@ streamlit run dashboard.py        # => http://localhost:8501
 | | |
 |---|---|
 | **3&nbsp;·&nbsp;Output** <br>Output of Query | 
-| <img src="images/Screenshot 2025-06-26 023604.png" alt="Postman call returning JSON answer" width="400"/> |
+| <img src="images/output.png" alt="Postman call returning JSON answer" width="400"/> |

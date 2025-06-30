@@ -40,8 +40,8 @@ streamlit run dashboard.py        # => http://localhost:8501
 
 | | |
 |---|---|
-| **1&nbsp;·&nbsp;Interactive Dashboard** <br>Live query console, rolling log, and usage analytics | **2&nbsp;·&nbsp;VS Code Extension** <br>Inline answers & code snippets without leaving your editor |
-| <img src="images/dashboard.png" alt="Streamlit dashboard showing query log and bar chart" width="400"/> | <img src="images/vscode_extension.png" alt="VS Code panel with chatbot response" width="400"/> |
+| **1&nbsp;·&nbsp;Interactive Dashboard** <br>Live query console, rolling log, and usage analytics | **2&nbsp;·&nbsp;Query** <br>Query Board |
+| <img src="images/dashboard.png" alt="Streamlit dashboard showing query log and bar chart" width="400"/> | <img src="images/query.png" alt="VS Code panel with chatbot response" width="400"/> |
 
 | | |
 |---|---|

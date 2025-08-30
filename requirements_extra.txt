@@ -1,0 +1,8 @@
+flask
+flask-cors
+transformers
+torch
+streamlit
+requests
+pandas
+sqlite3-binary; sys_platform == "emscripten"  

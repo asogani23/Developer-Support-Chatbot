@@ -4,13 +4,14 @@ import sqlite3
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# --------- DB helpers (WAL so API & dashboard don't block each other) ---------
+# --------- Paths (anchor DB to this file’s folder) ----------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DB = os.path.join(BASE_DIR, "logs.db")
+DB_PATH = os.environ.get("CHATBOT_DB", DEFAULT_DB)
+
+# --------- DB helpers (WAL so API & dashboard don't block) ----------
 def get_conn():
-    conn = sqlite3.connect(
-        os.environ.get("CHATBOT_DB", "logs.db"),
-        check_same_thread=False,
-        isolation_level=None,
-    )
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
@@ -18,24 +19,6 @@ def get_conn():
     except Exception:
         pass
     return conn
-
-# --------- Provider auto-detect (prefers Gemini if a key is present) ----------
-def detect_provider():
-    if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
-        return "gemini"
-    if os.getenv("OPENAI_API_KEY"):
-        return "openai"
-    return "hf"
-
-# Optional .env
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
-
-PROVIDER = (os.environ.get("PROVIDER") or "").strip().lower() or detect_provider()
-DB_PATH = os.environ.get("CHATBOT_DB", "logs.db")
 
 def init_db():
     with get_conn() as conn:
@@ -59,6 +42,23 @@ def log_interaction(ts, query, response, latency_ms, provider, model):
             (ts, query, response, latency_ms, provider, model),
         )
         conn.commit()
+
+# --------- Provider auto-detect (prefers Gemini if a key is present) ----------
+def detect_provider():
+    if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    if os.getenv("OPENAI_API_KEY"):
+        return "openai"
+    return "hf"
+
+# Optional .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+PROVIDER = (os.environ.get("PROVIDER") or "").strip().lower() or detect_provider()
 
 # ------------------------------- Models ---------------------------------------
 _openai_client = None
@@ -179,11 +179,13 @@ init_db()
 
 @app.route("/health", methods=["GET"])
 def health():
+    # show db path too for sanity
     return jsonify({
         "ok": True,
         "provider": provider_name,
         "model": model_name,
-        "use_system_prompt": USE_SYSTEM_PROMPT
+        "use_system_prompt": USE_SYSTEM_PROMPT,
+        "db_path": DB_PATH,
     })
 
 @app.route("/query", methods=["POST"])
@@ -228,7 +230,15 @@ def admin_clear():
         conn.execute("DELETE FROM interactions;")
         conn.execute("VACUUM;")
         conn.commit()
-    return jsonify({"cleared": True})
+    return jsonify({"cleared": True, "db_path": DB_PATH})
+
+# Quick stats
+@app.route("/admin/stats", methods=["GET"])
+def admin_stats():
+    with get_conn() as conn:
+        cur = conn.execute("SELECT COUNT(*) FROM interactions;")
+        (count,) = cur.fetchone()
+    return jsonify({"count": int(count), "db_path": DB_PATH})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=True)

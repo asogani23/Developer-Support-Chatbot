@@ -1,28 +1,33 @@
-import os
-import time
-import sqlite3
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+# dashboard_streamlit1.py — Streamlit-only (Flask stripped out)
+# Run with:  streamlit run dashboard_streamlit1.py --server.port 8501
 
-# --------- Paths (anchor DB to this file’s folder) ----------
+import os
+import sqlite3
+import pandas as pd
+import streamlit as st
+import requests
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(BASE_DIR, "logs.db")
 DB_PATH = os.environ.get("CHATBOT_DB", DEFAULT_DB)
 
+
+API_URL = os.environ.get("CHATBOT_API", "http://127.0.0.1:5000/query")
+HEALTH_URL = os.environ.get("CHATBOT_HEALTH", "http://127.0.0.1:5000/health")
+ADMIN_CLEAR_URL = os.environ.get("CHATBOT_CLEAR", "http://127.0.0.1:5000/admin/clear")
+
+st.set_page_config(page_title="Dev Support Chatbot • Dashboard", layout="wide")
+st.title("🛠️ Dev Support Chatbot — Live Dashboard")
+
 # --------- DB helpers (WAL so API & dashboard don't block) ----------
-def get_conn():
+def fresh_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA busy_timeout=3000;")
-    except Exception:
-        pass
-    return conn
-
-def init_db():
-    with get_conn() as conn:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS interactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts TEXT NOT NULL,
@@ -32,213 +37,105 @@ def init_db():
                 provider TEXT,
                 model TEXT
             );
-        """)
-        conn.commit()
-
-def log_interaction(ts, query, response, latency_ms, provider, model):
-    with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO interactions (ts, query, response, latency_ms, provider, model) VALUES (?, ?, ?, ?, ?, ?)",
-            (ts, query, response, latency_ms, provider, model),
+            """
         )
         conn.commit()
-
-# --------- Provider auto-detect (prefers Gemini if a key is present) ----------
-def detect_provider():
-    if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
-        return "gemini"
-    if os.getenv("OPENAI_API_KEY"):
-        return "openai"
-    return "hf"
-
-# Optional .env
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
-
-PROVIDER = (os.environ.get("PROVIDER") or "").strip().lower() or detect_provider()
-
-# ------------------------------- Models ---------------------------------------
-_openai_client = None
-_openai_model = None
-_gemini_model = None
-_hf_pipe = None
-_hf_model_name = None
-
-USE_SYSTEM_PROMPT = not bool(int(os.getenv("DISABLE_SYSTEM_PROMPT", "0")))
-
-def _system_prompt():
-    return (
-        "You are a concise developer support assistant. "
-        "Explain clearly, provide short code examples when helpful, and avoid repetition."
-    )
-
-def _init_openai():
-    global _openai_client, _openai_model
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is required for OpenAI provider")
-    try:
-        from openai import OpenAI
-        _openai_client = OpenAI(api_key=api_key)
-        _openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     except Exception:
-        import openai
-        openai.api_key = api_key
-        _openai_client = openai
-        _openai_model = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
-    return "openai", _openai_model
+        pass
+    return conn
 
-def _init_gemini():
-    global _gemini_model
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY (or GEMINI_API_KEY) is required for Gemini provider")
-    import google.generativeai as genai
-    genai.configure(api_key=api_key)
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-    _gemini_model = genai.GenerativeModel(model_name)
-    return "gemini", model_name
+def load_df(limit: int = 1000) -> pd.DataFrame:
+    with fresh_conn() as conn:
+        df = pd.read_sql_query(
+            f"""
+            SELECT id, ts, query, response, latency_ms, provider, model
+            FROM interactions
+            ORDER BY id DESC
+            LIMIT {int(limit)}
+            """,
+            conn,
+        )
+    if not df.empty:
+        df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+        df["latency_ms"] = pd.to_numeric(df["latency_ms"], errors="coerce")
+        df = df.dropna(subset=["ts", "latency_ms"])
+    return df
 
-def _init_hf():
-    global _hf_pipe, _hf_model_name
-    candidates = [
-        ("text2text-generation", "google/flan-t5-base"),
-        ("text2text-generation", "google/flan-t5-small"),
-        ("text-generation", "gpt2"),
-    ]
-    last_err = None
-    for task, name in candidates:
+# --------------------------- Sidebar ---------------------------
+with st.sidebar:
+    st.subheader("Settings")
+    st.caption("These can also be set via env vars: CHATBOT_DB, CHATBOT_API, CHATBOT_HEALTH, CHATBOT_CLEAR")
+    st.write(f"**DB:** `{DB_PATH}`")
+
+    api_up = False
+    health_info = {}
+    try:
+        r = requests.get(HEALTH_URL, timeout=2)
+        api_up = r.ok
+        if r.ok:
+            health_info = r.json()
+    except Exception:
+        api_up = False
+    st.write(f"**API health:** {'🟢 up' if api_up else '🔴 down'}")
+    if health_info:
+        st.caption(f"Provider: {health_info.get('provider')} • Model: {health_info.get('model')}")
+
+    rows = st.slider("Rows to load", min_value=50, max_value=5000, value=1000, step=50)
+
+    if st.button("Clear DB"):
         try:
-            from transformers import pipeline
-            _hf_pipe = pipeline(task, model=name)
-            _hf_model_name = name
-            return "hf", name
+            r = requests.post(ADMIN_CLEAR_URL, timeout=5)
+            if r.ok:
+                st.success("Cleared DB.")
+            else:
+                st.error(f"Clear failed: {r.status_code}")
         except Exception as e:
-            last_err = e
-    raise RuntimeError(f"HF init failed: {last_err}")
+            st.error(f"Clear failed: {e}")
 
-def _ensure_provider():
-    if PROVIDER == "openai":
-        return _init_openai()
-    elif PROVIDER == "gemini":
-        return _init_gemini()
-    else:
-        return _init_hf()
+# --------------------------- Query box ---------------------------
+st.subheader("Try a prompt")
+col1, col2 = st.columns([3, 1])
+with col1:
+    user_query = st.text_input("Enter a question:", value="what is kotlin", placeholder="Ask me anything…")
+with col2:
+    if st.button("Send", type="primary"):
+        try:
+            r = requests.post(API_URL, json={"query": user_query}, timeout=30)
+            if r.ok:
+                st.success("Response sent. See below.")
+                st.json(r.json())
+            else:
+                st.error(f"API error: {r.status_code} {r.text[:200]}")
+        except Exception as e:
+            st.error(f"Request failed: {e}")
 
-def _generate_openai(user_query: str) -> tuple[str, str]:
-    messages = [{"role": "user", "content": user_query}]
-    if USE_SYSTEM_PROMPT:
-        messages.insert(0, {"role": "system", "content": _system_prompt()})
-    try:
-        resp = _openai_client.chat.completions.create(
-            model=_openai_model, temperature=0.3, max_tokens=300, messages=messages
-        )
-        text = resp.choices[0].message.content.strip()
-    except Exception:
-        resp = _openai_client.ChatCompletion.create(
-            model=_openai_model, temperature=0.3, max_tokens=300, messages=messages
-        )
-        text = resp["choices"][0]["message"]["content"].strip()
-    return text, _openai_model
+# --------------------------- Data & Analytics ---------------------------
+df = load_df(rows)
+st.subheader("Latest interactions")
+if df.empty:
+    st.info("No interactions yet. Ask a question above to generate data.")
+else:
+    st.dataframe(df[["id", "ts", "query", "response", "latency_ms", "provider", "model"]],
+                 use_container_width=True, height=320)
 
-def _generate_gemini(user_query: str) -> tuple[str, str]:
-    if USE_SYSTEM_PROMPT:
-        parts = [_system_prompt(), user_query]
-    else:
-        parts = [user_query]
-    result = _gemini_model.generate_content(parts)
-    text = (result.text or "").strip()
-    return text, os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    st.subheader("Analytics")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Queries", len(df))
+    c2.metric("Avg Latency (ms)", f"{round(df['latency_ms'].mean(), 1)}")
+    c3.metric("P95 Latency (ms)", f"{int(df['latency_ms'].quantile(0.95))}")
+    c4.metric("Unique Queries", df["query"].nunique())
 
-def _generate_hf(user_query: str) -> tuple[str, str]:
-    task = getattr(_hf_pipe, "task", "")
-    prompt = f"{_system_prompt()}\n\nUser: {user_query}\nAssistant:" if USE_SYSTEM_PROMPT else user_query
-    if task == "text2text-generation":
-        out = _hf_pipe(prompt, max_new_tokens=220)
-        text = out[0]["generated_text"].strip()
-    else:
-        out = _hf_pipe(
-            prompt,
-            max_new_tokens=220,
-            do_sample=False,
-            repetition_penalty=1.2,
-            no_repeat_ngram_size=3,
-            return_full_text=False,
-        )
-        text = out[0]["generated_text"].strip()
-    return text, _hf_model_name
+    dft = df.copy()
+    dft["bucket"] = dft["ts"].dt.floor("min")
+    counts = dft.groupby("bucket").size().rename("count").reset_index()
+    lat_by_bucket = dft.groupby("bucket")["latency_ms"].mean().rename("avg_latency_ms").reset_index()
+    merged = counts.merge(lat_by_bucket, on="bucket", how="outer").sort_values("bucket").fillna(0)
 
-# ------------------------------- Flask app ------------------------------------
-app = Flask(__name__)
-CORS(app)
-provider_name, model_name = _ensure_provider()
-init_db()
+    st.write("**Queries per minute**")
+    st.bar_chart(merged.set_index("bucket")["count"])
 
-@app.route("/health", methods=["GET"])
-def health():
-    # show db path too for sanity
-    return jsonify({
-        "ok": True,
-        "provider": provider_name,
-        "model": model_name,
-        "use_system_prompt": USE_SYSTEM_PROMPT,
-        "db_path": DB_PATH,
-    })
+    st.write("**Average latency per minute (ms)**")
+    st.line_chart(merged.set_index("bucket")["avg_latency_ms"])
 
-@app.route("/query", methods=["POST"])
-def query():
-    import datetime as _dt
-    start = time.perf_counter()
-    data = request.get_json(silent=True) or {}
-    user_query = (data.get("query") or "").strip()
-    if not user_query:
-        return jsonify({"error": "No query provided"}), 400
-
-    try:
-        if provider_name == "openai":
-            answer, mdl = _generate_openai(user_query)
-        elif provider_name == "gemini":
-            answer, mdl = _generate_gemini(user_query)
-        else:
-            answer, mdl = _generate_hf(user_query)
-    except Exception as e:
-        answer, mdl = f"(provider_error) {e}", "n/a"
-
-    latency_ms = int((time.perf_counter() - start) * 1000)
-    ts = _dt.datetime.now().isoformat(timespec="seconds")
-    try:
-        log_interaction(ts, user_query, answer, latency_ms, provider_name, mdl)
-    except Exception as e:
-        print("Logging error:", repr(e))
-
-    return jsonify({
-        "response": answer,
-        "latency_ms": latency_ms,
-        "timestamp": ts,
-        "provider": provider_name,
-        "model": mdl,
-        "use_system_prompt": USE_SYSTEM_PROMPT
-    })
-
-# ---- Admin: clear all logs (used by dashboard "Clear all logs" button) -------
-@app.route("/admin/clear", methods=["POST"])
-def admin_clear():
-    with get_conn() as conn:
-        conn.execute("DELETE FROM interactions;")
-        conn.execute("VACUUM;")
-        conn.commit()
-    return jsonify({"cleared": True, "db_path": DB_PATH})
-
-# Quick stats
-@app.route("/admin/stats", methods=["GET"])
-def admin_stats():
-    with get_conn() as conn:
-        cur = conn.execute("SELECT COUNT(*) FROM interactions;")
-        (count,) = cur.fetchone()
-    return jsonify({"count": int(count), "db_path": DB_PATH})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=True)
+    st.write("**Latency distribution (ms)**")
+    st.bar_chart(df["latency_ms"])

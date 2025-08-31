@@ -3,118 +3,183 @@ import time
 import sqlite3
 import pandas as pd
 import streamlit as st
-from contextlib import closing
+import requests
 
 DB_PATH = os.environ.get("CHATBOT_DB", "logs.db")
 API_URL = os.environ.get("CHATBOT_API", "http://127.0.0.1:5000/query")
+HEALTH_URL = os.environ.get("CHATBOT_HEALTH", "http://127.0.0.1:5000/health")
+ADMIN_CLEAR_URL = os.environ.get("CHATBOT_CLEAR", "http://127.0.0.1:5000/admin/clear")
 
 st.set_page_config(page_title="Dev Support Chatbot • Dashboard", layout="wide")
-
-@st.cache_resource
-def get_conn():
-    # Single connection per session; safe because we only read or do small writes
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-def init_db(conn):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS interactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            query TEXT NOT NULL,
-            response TEXT NOT NULL,
-            latency_ms INTEGER NOT NULL
-        );
-    """)
-    conn.commit()
-
-conn = get_conn()
-init_db(conn)
-
 st.title("🛠️ Dev Support Chatbot — Live Dashboard")
 
-with st.expander("Send a test query"):
+# Fresh connection each fetch (prevents stale caches)
+def fresh_conn():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=3000;")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS interactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                query TEXT NOT NULL,
+                response TEXT NOT NULL,
+                latency_ms INTEGER NOT NULL,
+                provider TEXT,
+                model TEXT
+            );
+        """)
+        conn.commit()
+    except Exception:
+        pass
+    return conn
+
+def fetch_df():
+    conn = fresh_conn()
+    try:
+        df = pd.read_sql_query("SELECT * FROM interactions ORDER BY id DESC", conn)
+    finally:
+        conn.close()
+    return df
+
+# Provider/model banner
+provider = "unknown"
+model = "unknown"
+try:
+    h = requests.get(HEALTH_URL, timeout=4).json()
+    provider = h.get("provider", "unknown")
+    model = h.get("model", "unknown")
+    use_system_prompt = h.get("use_system_prompt", True)
+except Exception as e:
+    st.warning(f"Health check failed: {e}")
+else:
+    if provider == "hf":
+        st.info(f"Provider: {provider} • Model: {model} — Local fallback. For best quality, set Gemini/OpenAI.")
+    else:
+        st.success(f"Provider: {provider} • Model: {model} • System prompt: {'on' if use_system_prompt else 'off'}")
+
+with st.expander("Send a test query", expanded=True):
     q = st.text_input("Query", placeholder="e.g., How do I fix a Python KeyError?")
-    col_a, col_b = st.columns([1,1])
-    with col_a:
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
         run_btn = st.button("Send", type="primary", use_container_width=True)
-    with col_b:
+    with c2:
         refresh_btn = st.button("Refresh data", use_container_width=True)
+    with c3:
+        clear_btn = st.button("Clear all logs", use_container_width=True)
 
     if run_btn and q.strip():
-        import requests, datetime as dt
         try:
-            r = requests.post(API_URL, json={"query": q.strip()}, timeout=20)
+            r = requests.post(API_URL, json={"query": q.strip()}, timeout=30)
             if r.ok:
                 payload = r.json()
-                st.success(f"Response ({payload.get('latency_ms')} ms @ {payload.get('timestamp')}):")
-                st.code(payload.get("response", "")[:1000])  # keep short on screen
+                st.success(
+                    f"Response ({payload.get('latency_ms')} ms @ {payload.get('timestamp')}) — "
+                    f"{payload.get('provider')}/{payload.get('model')}"
+                )
+                st.code((payload.get("response", "") or "")[:5000])
             else:
                 st.error(f"API error {r.status_code}: {r.text[:300]}")
         except Exception as e:
             st.error(f"Request failed: {e}")
+        time.sleep(0.2)
+        st.rerun()
 
-# --- Load data from DB
-df = pd.read_sql_query("SELECT * FROM interactions ORDER BY id DESC", conn)
+    if refresh_btn:
+        st.rerun()
 
-st.subheader("📒 Query Log")
+    if clear_btn:
+        ok = False
+        try:
+            resp = requests.post(ADMIN_CLEAR_URL, timeout=5)
+            ok = resp.ok
+        except Exception:
+            ok = False
+        if not ok:
+            try:
+                conn = fresh_conn()
+                conn.execute("DELETE FROM interactions;")
+                conn.execute("VACUUM;")
+                conn.commit()
+                conn.close()
+                ok = True
+            except Exception as e:
+                st.error(f"Could not clear logs: {e}")
+        if ok:
+            st.success("Logs cleared.")
+            time.sleep(0.15)
+            st.rerun()
+
+st.markdown("---")
+
+# Always fetch fresh data
+df = fetch_df()
+
+# Latest responses (large, readable)
+st.subheader("🆕 Latest responses")
 if df.empty:
-    st.info("No queries yet. Send one above to populate the log.")
+    st.info("No queries yet.")
 else:
-    # Pretty columns
+    latest = df.sort_values("id", ascending=False).head(10)
+    for _, row in latest.iterrows():
+        with st.container():
+            st.markdown(f"**{row['ts']}** — *{row.get('provider','?')}/{row.get('model','?')}*")
+            st.write(f"**Q:** {row['query']}")
+            with st.expander("Show full response", expanded=True):
+                st.code(row['response'])
+
+st.markdown("---")
+st.subheader("📒 Full Query Log (compact)")
+if df.empty:
+    st.info("No data to display.")
+else:
     df_pretty = df.rename(columns={
         "ts": "Timestamp",
         "query": "Query",
         "response": "Response",
         "latency_ms": "Latency (ms)",
+        "provider": "Provider",
+        "model": "Model",
     })
-    # Avoid huge cells
-    df_pretty["Response"] = df_pretty["Response"].str.slice(0, 300)
-    st.dataframe(df_pretty.drop(columns=["id"]), use_container_width=True, height=300)
+    df_pretty["Response"] = df_pretty["Response"].str.slice(0, 200)
+    st.dataframe(df_pretty.drop(columns=["id"]), use_container_width=True, height=320)
 
 st.markdown("---")
 st.subheader("📈 Analytics")
-
 if df.empty:
     st.info("No data to display yet.")
-    st.stop()
+else:
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+    df = df.dropna(subset=["ts"])
 
-# Ensure proper dtypes
-df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
-df = df.dropna(subset=["ts"])
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Total Queries (all time)", len(df))
+    with c2:
+        st.metric("Unique Questions", df["query"].nunique())
+    with c3:
+        st.metric("Avg Latency (ms)", round(df["latency_ms"].mean(), 1))
+    with c4:
+        st.metric("P95 Latency (ms)", int(df["latency_ms"].quantile(0.95)) if len(df) >= 2 else int(df["latency_ms"].max()))
 
-# KPI row
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("Total Queries (all time)", len(df))
-with col2:
-    st.metric("Unique Questions", df["query"].nunique())
-with col3:
-    st.metric("Avg Latency (ms)", round(df["latency_ms"].mean(), 1))
-with col4:
-    st.metric("P95 Latency (ms)", int(df["latency_ms"].quantile(0.95)) if len(df) >= 2 else int(df["latency_ms"].max()))
+    df_time = (
+        df.assign(bucket=df["ts"].dt.floor("min"))
+          .groupby("bucket").size().sort_index().rename("count").reset_index()
+    )
+    if not df_time.empty:
+        df_time["cumulative"] = df_time["count"].cumsum()
+        st.write("**Queries per minute (bar)**")
+        st.bar_chart(df_time.set_index("bucket")["count"])
+        st.write("**Cumulative queries (line)**")
+        st.line_chart(df_time.set_index("bucket")["cumulative"])
 
-# Queries over time (per minute bucket, accumulative)
-df_time = (
-    df.assign(bucket=df["ts"].dt.floor("min"))
-      .groupby("bucket").size().sort_index().rename("count").reset_index()
-)
-df_time["cumulative"] = df_time["count"].cumsum()
+    st.write("**Top repeated queries**")
+    top_queries = (
+        df.groupby("query").size().sort_values(ascending=False).head(10).rename("Count").reset_index()
+    )
+    st.dataframe(top_queries, use_container_width=True)
 
-st.write("**Queries per minute (bar)**")
-st.bar_chart(df_time.set_index("bucket")["count"])
-
-st.write("**Cumulative queries (line)**")
-st.line_chart(df_time.set_index("bucket")["cumulative"])
-
-# Top repeated questions
-st.write("**Top repeated queries**")
-top_queries = (
-    df.groupby("query").size().sort_values(ascending=False).head(10).rename("Count").reset_index()
-)
-st.dataframe(top_queries, use_container_width=True)
-
-# Latency distribution
-st.write("**Latency distribution (ms)**")
-st.bar_chart(df["latency_ms"])
-
-st.caption("Data persisted in SQLite — charts now reflect true totals across sessions, not just current run.")
+    st.write("**Latency distribution (ms)**")
+    st.bar_chart(df["latency_ms"])

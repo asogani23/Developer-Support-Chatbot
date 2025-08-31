@@ -138,24 +138,44 @@ with col2:
         st.info("Cleared.")
 
 # Full-width, prettier response card
+# Full-width response (header stays styled; body uses Streamlit Markdown)
 if st.session_state.last_response:
     latency_chip = (
         f'<span class="response-chip">⚡ {st.session_state.last_latency} ms</span>'
         if st.session_state.last_latency is not None else ""
     )
     meta = f'🕒 {st.session_state.last_timestamp}{latency_chip}'
+
+    # Header (keeps your nice styling)
     st.markdown(
         f"""
-        <div class="response-card">
+        <div class="response-card" style="margin-bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0;">
           <div class="response-title">🤖 Chatbot Response</div>
           <div class="response-meta">{meta}</div>
-          <div class="response-body">
-            {st.session_state.last_response}
-          </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+    # Body: use Streamlit's Markdown parser so code fences render correctly
+    body = st.container()
+    with body:
+        # Give the body a card look with a light wrapper div behind it
+        st.markdown(
+            """
+            <div class="response-card" style="
+                border-top-left-radius:0; border-top-right-radius:0;
+                margin-top:0; background:transparent; border-top:none;">
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # IMPORTANT: render the model output as Markdown (no HTML)
+        st.markdown(st.session_state.last_response, unsafe_allow_html=False)
+
+        # close the wrapper
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
 # Log Display Section (unchanged)
 st.header("Query Log")

@@ -1,141 +1,160 @@
-# dashboard_streamlit1.py — Streamlit-only (Flask stripped out)
-# Run with:  streamlit run dashboard_streamlit1.py --server.port 8501
-
 import os
-import sqlite3
+import time
+import datetime
 import pandas as pd
 import streamlit as st
 import requests
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DB = os.path.join(BASE_DIR, "logs.db")
-DB_PATH = os.environ.get("CHATBOT_DB", DEFAULT_DB)
-
-
+# === Config ===
 API_URL = os.environ.get("CHATBOT_API", "http://127.0.0.1:5000/query")
-HEALTH_URL = os.environ.get("CHATBOT_HEALTH", "http://127.0.0.1:5000/health")
-ADMIN_CLEAR_URL = os.environ.get("CHATBOT_CLEAR", "http://127.0.0.1:5000/admin/clear")
 
-st.set_page_config(page_title="Dev Support Chatbot • Dashboard", layout="wide")
-st.title("🛠️ Dev Support Chatbot — Live Dashboard")
+st.title("Developer Support Chatbot Dashboard")
 
-# --------- DB helpers (WAL so API & dashboard don't block) ----------
-def fresh_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
+# ---- Inject minimal CSS just for the response card ----
+st.markdown(
+    """
+    <style>
+      .response-card {
+        border: 1px solid #e5e7eb;           /* light gray */
+        background: linear-gradient(180deg, #f7fff9 0%, #eefdf4 100%);
+        border-radius: 14px;
+        padding: 18px 20px;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.06);
+        margin-top: 8px;
+        max-height: 460px;                    /* keep page tidy on long answers */
+        overflow: auto;                       /* scroll long responses */
+      }
+      .response-title {
+        font-weight: 700;
+        font-size: 1.05rem;
+        color: #065f46;                       /* emerald-800 */
+        margin-bottom: 8px;
+      }
+      .response-body {
+        font-size: 1.0rem;
+        line-height: 1.6;
+        color: #0f172a;                       /* slate-900 */
+      }
+      .response-body code {
+        background: #f3f4f6;                  /* gray-100 */
+        padding: 2px 6px;
+        border-radius: 6px;
+      }
+      .response-body pre {
+        background: #0b1020;                  /* dark block for code fences */
+        color: #e5e7eb;
+        padding: 12px 14px;
+        border-radius: 10px;
+        overflow: auto;
+      }
+      .response-body ul, .response-body ol {
+        margin-left: 1.2rem;
+      }
+      .response-body h1, .response-body h2, .response-body h3 {
+        margin-top: 0.6rem;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# === Persistent storage (prevents reset on each rerun) ===
+if "data" not in st.session_state:
+    st.session_state.data = {
+        "Timestamp": [],
+        "Query": [],
+        "Response": [],
+        "Latency_ms": [],  # track response time
+    }
+if "last_response" not in st.session_state:
+    st.session_state.last_response = ""
+
+# Function to log query and response
+def log_query(query, response, latency_ms):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.data["Timestamp"].append(timestamp)
+    st.session_state.data["Query"].append(query)
+    st.session_state.data["Response"].append(response)
+    st.session_state.data["Latency_ms"].append(latency_ms)
+    st.session_state.last_response = response  # show nicely in the card
+
+# Chatbot API call with latency measurement
+def chatbot_api_call(query):
     try:
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=3000;")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS interactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT NOT NULL,
-                query TEXT NOT NULL,
-                response TEXT NOT NULL,
-                latency_ms INTEGER NOT NULL,
-                provider TEXT,
-                model TEXT
-            );
-            """
-        )
-        conn.commit()
-    except Exception:
-        pass
-    return conn
+        start = time.perf_counter()
+        r = requests.post(API_URL, json={"query": query}, timeout=30)
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        if r.status_code == 200:
+            j = r.json()
+            resp = j.get("response") or j.get("answer") or str(j)
+            return resp, latency_ms
+        else:
+            return f"API error: {r.status_code}", latency_ms
+    except Exception as e:
+        latency_ms = int((time.perf_counter() - start) * 1000) if "start" in locals() else 0
+        return f"Error connecting to chatbot API: {e}", latency_ms
 
-def load_df(limit: int = 1000) -> pd.DataFrame:
-    with fresh_conn() as conn:
-        df = pd.read_sql_query(
-            f"""
-            SELECT id, ts, query, response, latency_ms, provider, model
-            FROM interactions
-            ORDER BY id DESC
-            LIMIT {int(limit)}
-            """,
-            conn,
-        )
-    if not df.empty:
-        df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
-        df["latency_ms"] = pd.to_numeric(df["latency_ms"], errors="coerce")
-        df = df.dropna(subset=["ts", "latency_ms"])
-    return df
+# ================= UI =================
 
-# --------------------------- Sidebar ---------------------------
-with st.sidebar:
-    st.subheader("Settings")
-    st.caption("These can also be set via env vars: CHATBOT_DB, CHATBOT_API, CHATBOT_HEALTH, CHATBOT_CLEAR")
-    st.write(f"**DB:** `{DB_PATH}`")
-
-    api_up = False
-    health_info = {}
-    try:
-        r = requests.get(HEALTH_URL, timeout=2)
-        api_up = r.ok
-        if r.ok:
-            health_info = r.json()
-    except Exception:
-        api_up = False
-    st.write(f"**API health:** {'🟢 up' if api_up else '🔴 down'}")
-    if health_info:
-        st.caption(f"Provider: {health_info.get('provider')} • Model: {health_info.get('model')}")
-
-    rows = st.slider("Rows to load", min_value=50, max_value=5000, value=1000, step=50)
-
-    if st.button("Clear DB"):
-        try:
-            r = requests.post(ADMIN_CLEAR_URL, timeout=5)
-            if r.ok:
-                st.success("Cleared DB.")
-            else:
-                st.error(f"Clear failed: {r.status_code}")
-        except Exception as e:
-            st.error(f"Clear failed: {e}")
-
-# --------------------------- Query box ---------------------------
-st.subheader("Try a prompt")
-col1, col2 = st.columns([3, 1])
+# Input Section
+st.header("Interact with Chatbot")
+query = st.text_input("Enter your query:", key="query_input_box")
+col1, col2 = st.columns([1, 1])
 with col1:
-    user_query = st.text_input("Enter a question:", value="what is kotlin", placeholder="Ask me anything…")
+    if st.button("Submit"):
+        response, latency = chatbot_api_call(query)
+        log_query(query, response, latency)
 with col2:
-    if st.button("Send", type="primary"):
-        try:
-            r = requests.post(API_URL, json={"query": user_query}, timeout=30)
-            if r.ok:
-                st.success("Response sent. See below.")
-                st.json(r.json())
-            else:
-                st.error(f"API error: {r.status_code} {r.text[:200]}")
-        except Exception as e:
-            st.error(f"Request failed: {e}")
+    if st.button("Clear Analytics / History"):
+        st.session_state.data = {"Timestamp": [], "Query": [], "Response": [], "Latency_ms": []}
+        st.session_state.last_response = ""
+        st.info("Cleared.")
 
-# --------------------------- Data & Analytics ---------------------------
-df = load_df(rows)
-st.subheader("Latest interactions")
-if df.empty:
-    st.info("No interactions yet. Ask a question above to generate data.")
+# Beautiful response card (only the output area)
+if st.session_state.last_response:
+    st.markdown(
+        f"""
+        <div class="response-card">
+          <div class="response-title">Chatbot Response</div>
+          <div class="response-body">
+            {st.session_state.last_response}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# Log Display Section (unchanged)
+st.header("Query Log")
+if st.session_state.data["Timestamp"]:
+    df = pd.DataFrame(st.session_state.data)
+    st.dataframe(df, use_container_width=True, height=260)
 else:
-    st.dataframe(df[["id", "ts", "query", "response", "latency_ms", "provider", "model"]],
-                 use_container_width=True, height=320)
+    st.write("No queries logged yet.")
 
-    st.subheader("Analytics")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Queries", len(df))
-    c2.metric("Avg Latency (ms)", f"{round(df['latency_ms'].mean(), 1)}")
-    c3.metric("P95 Latency (ms)", f"{int(df['latency_ms'].quantile(0.95))}")
-    c4.metric("Unique Queries", df["query"].nunique())
+# Analytics Section (unchanged)
+st.header("Analytics")
+if st.session_state.data["Timestamp"]:
+    df = pd.DataFrame(st.session_state.data)
 
-    dft = df.copy()
-    dft["bucket"] = dft["ts"].dt.floor("min")
-    counts = dft.groupby("bucket").size().rename("count").reset_index()
-    lat_by_bucket = dft.groupby("bucket")["latency_ms"].mean().rename("avg_latency_ms").reset_index()
-    merged = counts.merge(lat_by_bucket, on="bucket", how="outer").sort_values("bucket").fillna(0)
+    total = df["Query"].count()
+    st.metric("Total Queries", total)
 
+    df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+    df["Latency_ms"] = pd.to_numeric(df["Latency_ms"], errors="coerce")
+    df = df.dropna(subset=["Timestamp"])
+
+    df["bucket_min"] = df["Timestamp"].dt.floor("min")
+    per_min = df.groupby("bucket_min").size().rename("count").reset_index()
     st.write("**Queries per minute**")
-    st.bar_chart(merged.set_index("bucket")["count"])
+    st.bar_chart(per_min.set_index("bucket_min")["count"])
 
-    st.write("**Average latency per minute (ms)**")
-    st.line_chart(merged.set_index("bucket")["avg_latency_ms"])
+    if df["Latency_ms"].notna().any():
+        st.write("**Latency over time (ms)**")
+        st.line_chart(df.set_index("Timestamp")["Latency_ms"])
 
-    st.write("**Latency distribution (ms)**")
-    st.bar_chart(df["latency_ms"])
+    st.write("**Top repeated queries**")
+    topq = df.groupby("Query").size().sort_values(ascending=False).head(10).rename("Count").reset_index()
+    st.dataframe(topq, use_container_width=True)
+else:
+    st.write("No data to display.")

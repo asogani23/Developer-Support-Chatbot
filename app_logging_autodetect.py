@@ -1,36 +1,44 @@
 import os
 import time
 import sqlite3
-from contextlib import closing
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# ---------------------------
-# Provider auto-detect
-# ---------------------------
+# --------- DB helpers (WAL so API & dashboard don't block each other) ---------
+def get_conn():
+    conn = sqlite3.connect(
+        os.environ.get("CHATBOT_DB", "logs.db"),
+        check_same_thread=False,
+        isolation_level=None,
+    )
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=3000;")
+    except Exception:
+        pass
+    return conn
+
+# --------- Provider auto-detect (prefers Gemini if a key is present) ----------
 def detect_provider():
-    # Prefer Gemini if any Gemini-like key is present (no env var required)
     if os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
         return "gemini"
-    # Then OpenAI
     if os.getenv("OPENAI_API_KEY"):
         return "openai"
-    # Fallback to HF
     return "hf"
 
-PROVIDER = (os.environ.get("PROVIDER") or "").strip().lower() or detect_provider()
-
-# Optional: .env
+# Optional .env
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except Exception:
     pass
 
+PROVIDER = (os.environ.get("PROVIDER") or "").strip().lower() or detect_provider()
 DB_PATH = os.environ.get("CHATBOT_DB", "logs.db")
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS interactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,21 +49,18 @@ def init_db():
                 provider TEXT,
                 model TEXT
             );
-        """
-        )
+        """)
         conn.commit()
 
 def log_interaction(ts, query, response, latency_ms, provider, model):
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_conn() as conn:
         conn.execute(
             "INSERT INTO interactions (ts, query, response, latency_ms, provider, model) VALUES (?, ?, ?, ?, ?, ?)",
-            (ts, query, response, latency_ms, provider, model)
+            (ts, query, response, latency_ms, provider, model),
         )
         conn.commit()
 
-# ---------------------------
-# Model setup
-# ---------------------------
+# ------------------------------- Models ---------------------------------------
 _openai_client = None
 _openai_model = None
 _gemini_model = None
@@ -124,9 +129,9 @@ def _ensure_provider():
         return _init_hf()
 
 def _generate_openai(user_query: str) -> tuple[str, str]:
-    messages = [{"role":"user","content":user_query}]
+    messages = [{"role": "user", "content": user_query}]
     if USE_SYSTEM_PROMPT:
-        messages.insert(0, {"role":"system","content":_system_prompt()})
+        messages.insert(0, {"role": "system", "content": _system_prompt()})
     try:
         resp = _openai_client.chat.completions.create(
             model=_openai_model, temperature=0.3, max_tokens=300, messages=messages
@@ -150,10 +155,7 @@ def _generate_gemini(user_query: str) -> tuple[str, str]:
 
 def _generate_hf(user_query: str) -> tuple[str, str]:
     task = getattr(_hf_pipe, "task", "")
-    if USE_SYSTEM_PROMPT:
-        prompt = f"{_system_prompt()}\n\nUser: {user_query}\nAssistant:"
-    else:
-        prompt = user_query
+    prompt = f"{_system_prompt()}\n\nUser: {user_query}\nAssistant:" if USE_SYSTEM_PROMPT else user_query
     if task == "text2text-generation":
         out = _hf_pipe(prompt, max_new_tokens=220)
         text = out[0]["generated_text"].strip()
@@ -169,9 +171,7 @@ def _generate_hf(user_query: str) -> tuple[str, str]:
         text = out[0]["generated_text"].strip()
     return text, _hf_model_name
 
-# ---------------------------
-# Flask app
-# ---------------------------
+# ------------------------------- Flask app ------------------------------------
 app = Flask(__name__)
 CORS(app)
 provider_name, model_name = _ensure_provider()
@@ -179,15 +179,19 @@ init_db()
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True, "provider": provider_name, "model": model_name, "use_system_prompt": USE_SYSTEM_PROMPT})
+    return jsonify({
+        "ok": True,
+        "provider": provider_name,
+        "model": model_name,
+        "use_system_prompt": USE_SYSTEM_PROMPT
+    })
 
-@app.route('/query', methods=['POST'])
+@app.route("/query", methods=["POST"])
 def query():
     import datetime as _dt
     start = time.perf_counter()
     data = request.get_json(silent=True) or {}
     user_query = (data.get("query") or "").strip()
-
     if not user_query:
         return jsonify({"error": "No query provided"}), 400
 
@@ -216,6 +220,15 @@ def query():
         "model": mdl,
         "use_system_prompt": USE_SYSTEM_PROMPT
     })
+
+# ---- Admin: clear all logs (used by dashboard "Clear all logs" button) -------
+@app.route("/admin/clear", methods=["POST"])
+def admin_clear():
+    with get_conn() as conn:
+        conn.execute("DELETE FROM interactions;")
+        conn.execute("VACUUM;")
+        conn.commit()
+    return jsonify({"cleared": True})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=True)

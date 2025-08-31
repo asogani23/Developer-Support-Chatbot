@@ -8,51 +8,70 @@ import requests
 # === Config ===
 API_URL = os.environ.get("CHATBOT_API", "http://127.0.0.1:5000/query")
 
-st.title("Developer Support Chatbot Dashboard")
+st.set_page_config(page_title="Developer Support Chatbot Dashboard", layout="wide")
+st.title("🧰 Developer Support Chatbot Dashboard")
 
-# ---- Inject minimal CSS just for the response card ----
+# ---- CSS: make the response card full-width & prettier ----
 st.markdown(
     """
     <style>
+      /* Widen page content and make the card fill the main column */
+      .block-container { padding-top: 1.2rem; }
       .response-card {
-        border: 1px solid #e5e7eb;           /* light gray */
+        width: 100%;
+        border: 1px solid #e5e7eb;                 /* light gray */
+        border-left: 6px solid #10b981;            /* emerald accent */
         background: linear-gradient(180deg, #f7fff9 0%, #eefdf4 100%);
         border-radius: 14px;
-        padding: 18px 20px;
-        box-shadow: 0 8px 22px rgba(0,0,0,0.06);
-        margin-top: 8px;
-        max-height: 460px;                    /* keep page tidy on long answers */
-        overflow: auto;                       /* scroll long responses */
+        padding: 18px 22px;
+        box-shadow: 0 10px 26px rgba(0,0,0,0.06);
+        margin-top: 10px;
+        max-height: 70vh;                          /* tall so it fills the area */
+        overflow: auto;                             /* scroll long responses */
       }
       .response-title {
-        font-weight: 700;
-        font-size: 1.05rem;
-        color: #065f46;                       /* emerald-800 */
-        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+        font-weight: 800;
+        font-size: 1.1rem;
+        color: #065f46;                            /* emerald-800 */
+        margin-bottom: 6px;
+      }
+      .response-meta {
+        font-size: 0.86rem;
+        color: #475569;                            /* slate-600 */
+        margin-bottom: 10px;
+      }
+      .response-chip {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #ecfdf5;                       /* emerald-50 */
+        color: #065f46;
+        font-weight: 600;
+        border: 1px solid #a7f3d0;                 /* emerald-200 */
+        margin-left: 8px;
       }
       .response-body {
-        font-size: 1.0rem;
-        line-height: 1.6;
-        color: #0f172a;                       /* slate-900 */
+        font-size: 1.03rem;
+        line-height: 1.65;
+        color: #0f172a;                            /* slate-900 */
       }
       .response-body code {
-        background: #f3f4f6;                  /* gray-100 */
+        background: #f3f4f6;                       /* gray-100 */
         padding: 2px 6px;
         border-radius: 6px;
       }
       .response-body pre {
-        background: #0b1020;                  /* dark block for code fences */
+        background: #0b1020;                       /* dark block for code fences */
         color: #e5e7eb;
         padding: 12px 14px;
         border-radius: 10px;
         overflow: auto;
       }
-      .response-body ul, .response-body ol {
-        margin-left: 1.2rem;
-      }
-      .response-body h1, .response-body h2, .response-body h3 {
-        margin-top: 0.6rem;
-      }
+      .response-body ul, .response-body ol { margin-left: 1.2rem; }
+      .response-body h1, .response-body h2, .response-body h3 { margin-top: 0.6rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -68,6 +87,10 @@ if "data" not in st.session_state:
     }
 if "last_response" not in st.session_state:
     st.session_state.last_response = ""
+if "last_latency" not in st.session_state:
+    st.session_state.last_latency = None
+if "last_timestamp" not in st.session_state:
+    st.session_state.last_timestamp = ""
 
 # Function to log query and response
 def log_query(query, response, latency_ms):
@@ -76,7 +99,9 @@ def log_query(query, response, latency_ms):
     st.session_state.data["Query"].append(query)
     st.session_state.data["Response"].append(response)
     st.session_state.data["Latency_ms"].append(latency_ms)
-    st.session_state.last_response = response  # show nicely in the card
+    st.session_state.last_response = response
+    st.session_state.last_latency = latency_ms
+    st.session_state.last_timestamp = timestamp
 
 # Chatbot API call with latency measurement
 def chatbot_api_call(query):
@@ -108,14 +133,22 @@ with col2:
     if st.button("Clear Analytics / History"):
         st.session_state.data = {"Timestamp": [], "Query": [], "Response": [], "Latency_ms": []}
         st.session_state.last_response = ""
+        st.session_state.last_latency = None
+        st.session_state.last_timestamp = ""
         st.info("Cleared.")
 
-# Beautiful response card (only the output area)
+# Full-width, prettier response card
 if st.session_state.last_response:
+    latency_chip = (
+        f'<span class="response-chip">⚡ {st.session_state.last_latency} ms</span>'
+        if st.session_state.last_latency is not None else ""
+    )
+    meta = f'🕒 {st.session_state.last_timestamp}{latency_chip}'
     st.markdown(
         f"""
         <div class="response-card">
-          <div class="response-title">Chatbot Response</div>
+          <div class="response-title">🤖 Chatbot Response</div>
+          <div class="response-meta">{meta}</div>
           <div class="response-body">
             {st.session_state.last_response}
           </div>

@@ -13,6 +13,12 @@ ADMIN_CLEAR_URL = os.environ.get("CHATBOT_CLEAR", "http://127.0.0.1:5000/admin/c
 st.set_page_config(page_title="Dev Support Chatbot • Dashboard", layout="wide")
 st.title("🛠️ Dev Support Chatbot — Live Dashboard")
 
+# --- Session state for persistent UX ---
+if "last_payload" not in st.session_state:
+    st.session_state["last_payload"] = None
+if "last_query" not in st.session_state:
+    st.session_state["last_query"] = ""
+
 # Fresh connection each fetch (prevents stale caches)
 def fresh_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
@@ -61,20 +67,26 @@ else:
         st.success(f"Provider: {provider} • Model: {model} • System prompt: {'on' if use_system_prompt else 'off'}")
 
 with st.expander("Send a test query", expanded=True):
-    q = st.text_input("Query", placeholder="e.g., How do I fix a Python KeyError?")
-    c1, c2, c3 = st.columns([1, 1, 1])
+    q = st.text_input("Query", value=st.session_state.get("last_query", ""), placeholder="e.g., How do I fix a Python KeyError?")
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
     with c1:
         run_btn = st.button("Send", type="primary", use_container_width=True)
     with c2:
         refresh_btn = st.button("Refresh data", use_container_width=True)
     with c3:
         clear_btn = st.button("Clear all logs", use_container_width=True)
+    with c4:
+        clear_last_btn = st.button("Hide latest response", use_container_width=True)
 
     if run_btn and q.strip():
         try:
             r = requests.post(API_URL, json={"query": q.strip()}, timeout=30)
             if r.ok:
                 payload = r.json()
+                # Persist for after-rerun display
+                st.session_state["last_payload"] = payload
+                st.session_state["last_query"] = q.strip()
+                # Show immediately
                 st.success(
                     f"Response ({payload.get('latency_ms')} ms @ {payload.get('timestamp')}) — "
                     f"{payload.get('provider')}/{payload.get('model')}"
@@ -84,7 +96,8 @@ with st.expander("Send a test query", expanded=True):
                 st.error(f"API error {r.status_code}: {r.text[:300]}")
         except Exception as e:
             st.error(f"Request failed: {e}")
-        time.sleep(0.2)
+        # Allow DB commit then rerun so tables/charts update, while we keep the latest response via session_state
+        time.sleep(0.25)
         st.rerun()
 
     if refresh_btn:
@@ -109,8 +122,26 @@ with st.expander("Send a test query", expanded=True):
                 st.error(f"Could not clear logs: {e}")
         if ok:
             st.success("Logs cleared.")
+            # Also clear the "latest response" panel when logs are cleared
+            st.session_state["last_payload"] = None
+            st.session_state["last_query"] = ""
             time.sleep(0.15)
             st.rerun()
+
+    if clear_last_btn:
+        st.session_state["last_payload"] = None
+        st.session_state["last_query"] = ""
+        st.rerun()
+
+# Persistent "Most recent response" card
+if st.session_state.get("last_payload"):
+    p = st.session_state["last_payload"]
+    st.subheader("🧠 Most recent response")
+    with st.container():
+        st.markdown(f"**{p.get('timestamp','')}** — *{p.get('provider','?')}/{p.get('model','?')}*")
+        st.write(f"**Q:** {st.session_state.get('last_query','')}")
+        with st.expander("Show full response", expanded=True):
+            st.code(p.get("response",""))
 
 st.markdown("---")
 

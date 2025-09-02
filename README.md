@@ -118,7 +118,6 @@ streamlit run dashboard.py --server.port 8501
 | Var              | Example                             | Purpose                                       |
 | ---------------- | ----------------------------------- | --------------------------------------------- |
 | `PROVIDER`       | `openai` \| `gemini` \| `hf`        | Selects model provider (auto-detect if unset) |
-| `OPENAI_API_KEY` | `sk-...`                            | Required for `PROVIDER=openai`                |
 | `GOOGLE_API_KEY` | `...`                               | Required for `PROVIDER=gemini`                |
 | `CHATBOT_DB`     | `/abs/path/logs.db`                 | Shared SQLite path used by API & dashboard    |
 | `PORT`           | `5001`                              | Port for the Flask API (default `5000`)       |
@@ -128,7 +127,7 @@ streamlit run dashboard.py --server.port 8501
 
 ---
 
-## 🧪 Demo Prompts (nice for screen-recordings)
+## 🧪 Tutorial Prompts 
 
 * `what is kotlin`
 * `write a Python function that returns the nth Fibonacci number iteratively`

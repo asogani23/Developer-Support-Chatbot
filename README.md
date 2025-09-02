@@ -1,7 +1,7 @@
 
 # 🛠️ Developer-Support Chatbot
 
-A lightweight **AI troubleshooting assistant** that answers developer questions, **logs every interaction**, and shows **live analytics** (queries/min, latency over time, top queries). It’s **provider-agnostic** (OpenAI / Gemini / local HF), and the UI is optimized for demos.
+A lightweight **AI troubleshooting assistant** that answers developer questions, **logs every interaction**, and shows **live analytics** (queries/min, latency over time, top queries). It’s powered by Gemini 2.5, and the UI is optimized for productivity.
 
 <p align="center">
   <a href="https://mediaspace.wisc.edu/media/Dev+Support+Chatbot-+Aagam+Sogani/1_y4izuzl7" target="_blank" rel="noopener noreferrer">
